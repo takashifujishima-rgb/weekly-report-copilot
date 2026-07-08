@@ -7,7 +7,273 @@ type Tone = 'executive' | 'analytical' | 'standard';
 
 export default function DashboardPage() {
   const [startDate, setStartDate] = useState('2026-07-06');
-  const [endDate, setEndDate] = useState('2026-07-10');
+  const [endDate, setEndDate] = useState('2026-07-10');"use client";
+
+import { useState, useEffect } from 'react';
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+import { Sparkles, FileText, LayoutDashboard, LogIn, LogOut, RefreshCw, CheckCircle2 } from 'lucide-react';
+
+export default function Home() {
+  const supabase = createClientComponentClient();
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  
+  // ユーザー設定の入力状態
+  const [challenge, setChallenge] = useState('');
+  const [division, setDivision] = useState('');
+  const [tone, setTone] = useState('executive');
+  const [report, setReport] = useState('');
+  const [saveStatus, setSaveStatus] = useState('');
+
+  // 1. ログイン状態の監視と初期データの読み込み
+  useEffect(() => {
+    const initSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        setUser(session.user);
+        // DBから保存済みの「チャレンジ」「事務分掌」を取得
+        const { data } = await supabase.from('user_settings').select('*').eq('id', session.user.id).single();
+        if (data) {
+          setChallenge(data.challenge_text);
+          setDivision(data.division_text);
+        }
+      }
+      setLoading(false);
+    };
+
+    initSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        const { data } = await supabase.from('user_settings').select('*').eq('id', session.user.id).single();
+        if (data) {
+          setChallenge(data.challenge_text);
+          setDivision(data.division_text);
+        }
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [supabase]);
+
+  // 2. ユーザー設定（目標・分掌）をSupabaseへ保存する処理
+  const handleSaveSettings = async () => {
+    if (!user) return;
+    setSaveStatus('保存中...');
+    const { error } = await supabase.from('user_settings').upsert({
+      id: user.id,
+      challenge_text: challenge,
+      division_text: division,
+    });
+    if (error) {
+      setSaveStatus('エラーが発生しました');
+    } else {
+      setSaveStatus('設定を保存しました！');
+      setTimeout(() => setSaveStatus(''), 3000);
+    }
+  };
+
+  // 3. 本物のGemini APIを叩いて週報を生成する処理
+  const handleGenerateReport = async () => {
+    if (!user) return;
+    setGenerating(true);
+    setReport('');
+
+    try {
+      // まず最新の設定をDBに自動保存
+      await supabase.from('user_settings').upsert({
+        id: user.id,
+        challenge_text: challenge,
+        division_text: division,
+      });
+
+      // スプリント2で作成した本番用API（/api/generate-report）にリクエスト
+      const response = await fetch('/api/generate-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tone })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '生成に失敗しました');
+
+      setReport(data.report);
+    } catch (error: any) {
+      setReport(`⚠️ エラーが発生しました:\n${error.message}\n\nGoogleの認証期限が切れている場合は、一度ログアウトして再度ログインし直してください。`);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
+        <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-blue-500/30">
+      {/* ナビゲーションバー */}
+      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-gradient-to-tr from-blue-600 to-indigo-600 p-2 rounded-xl shadow-lg shadow-blue-500/20">
+              <Sparkles className="w-5 h-5 text-white" />
+            </div>
+            <span className="font-bold text-lg tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
+              AI Weekly Report Copilot
+            </span>
+          </div>
+          
+          <div>
+            {user ? (
+              <button 
+                onClick={() => supabase.auth.signOut()}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-800 text-slate-400 hover:text-white hover:bg-slate-900 transition-all text-sm"
+              >
+                <LogOut className="w-4 h-4" /> ログアウト
+              </button>
+            ) : (
+              <a 
+                href="/api/auth/login"
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-lg shadow-blue-600/20 transition-all text-sm"
+              >
+                <LogIn className="w-4 h-4" /> Googleでログイン
+              </a>
+            )}
+          </div>
+        </div>
+      </header>
+
+      {/* メインコンテンツ */}
+      <main className="max-w-7xl mx-auto px-4 py-8">
+        {!user ? (
+          /* 未ログイン時の画面 */
+          <div className="max-w-xl mx-auto text-center py-20 bg-slate-900/30 border border-slate-900 rounded-3xl p-8 backdrop-blur">
+            <LayoutDashboard className="w-16 h-16 text-blue-500/40 mx-auto mb-6" />
+            <h2 className="text-2xl font-bold mb-3">週報作成を、完全に自動化。</h2>
+            <p className="text-slate-400 mb-8 leading-relaxed text-sm">
+              Googleアカウントと安全に連携することで、過去5日間のGmailの送受信トピックやカレンダーの予定から、AIがあなたのコンテキストに沿った完璧な週報を自動生成します。
+            </p>
+            <a 
+              href="/api/auth/login"
+              className="inline-flex items-center gap-3 px-6 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold shadow-xl shadow-blue-500/20 transition-all"
+            >
+              <LogIn className="w-5 h-5" /> Google連携を開始する
+            </a>
+          </div>
+        ) : (
+          /* ログイン済みの本番ダッシュボード */
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            
+            {/* 左側：設定・入力エリア (5カラム) */}
+            <div className="lg:col-span-5 space-y-6">
+              <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-6 backdrop-blur space-y-5">
+                <h3 className="font-bold text-slate-200 flex items-center gap-2 text-sm uppercase tracking-wider">
+                  <FileText className="w-4 h-4 text-blue-500" /> コンテキスト設定
+                </h3>
+                
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-2">今年度のチャレンジ・個人目標</label>
+                  <textarea 
+                    value={challenge}
+                    onChange={(e) => setChallenge(e.target.value)}
+                    placeholder="例: 新規事業立ち上げにおける要件定義の主導、チームのモダン技術選定のサポート"
+                    className="w-full h-24 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all text-sm resize-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-2">担当する事務分掌・定常業務</label>
+                  <textarea 
+                    value={division}
+                    onChange={(e) => setDivision(e.target.value)}
+                    placeholder="例: システム開発保守、ベンダーコントロール、週次進捗レポートの作成"
+                    className="w-full h-24 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all text-sm resize-none"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between pt-2">
+                  <button 
+                    onClick={handleSaveSettings}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-medium transition-all"
+                  >
+                    設定のみ保存
+                  </button>
+                  {saveStatus && <span className="text-xs text-emerald-400 font-medium">{saveStatus}</span>}
+                </div>
+              </div>
+
+              {/* トーン選択 ＆ 生成ボタン */}
+              <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-6 backdrop-blur space-y-4">
+                <label className="block text-xs font-medium text-slate-400">レポートの出力トーン</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button 
+                    onClick={() => setTone('executive')}
+                    className={`py-3 rounded-xl font-medium text-sm transition-all border ${tone === 'executive' ? 'bg-blue-600/10 border-blue-500 text-blue-400' : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'}`}
+                  >
+                    💡 Executive
+                    <span className="block text-[10px] opacity-70 mt-0.5">経営層・上長向け</span>
+                  </button>
+                  <button 
+                    onClick={() => setTone('analytical')}
+                    className={`py-3 rounded-xl font-medium text-sm transition-all border ${tone === 'analytical' ? 'bg-blue-600/10 border-blue-500 text-blue-400' : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'}`}
+                  >
+                    📊 Analytical
+                    <span className="block text-[10px] opacity-70 mt-0.5">定量データ・事実中心</span>
+                  </button>
+                </div>
+
+                <button 
+                  onClick={handleGenerateReport}
+                  disabled={generating}
+                  className="w-full flex items-center justify-center gap-2.5 py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:from-slate-800 disabled:to-slate-800 text-white font-semibold rounded-xl shadow-xl shadow-blue-500/10 disabled:shadow-none transition-all disabled:cursor-not-allowed"
+                >
+                  {generating ? (
+                    <>
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                      Googleからデータ抽出＆AI生成中...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-5 h-5" />
+                      本物の週報を全自動生成する
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* 右側：生成結果表示エリア (7カラム) */}
+            <div className="lg:col-span-7">
+              <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-6 backdrop-blur h-full flex flex-col min-h-[500px]">
+                <div className="flex items-center justify-between mb-4 border-b border-slate-800/60 pb-3">
+                  <h3 className="font-bold text-slate-200 text-sm flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500" /> AI成果レポート
+                  </h3>
+                </div>
+
+                <div className="flex-1 bg-slate-950/80 border border-slate-900 rounded-xl p-5 font-mono text-xs leading-relaxed text-slate-300 overflow-y-auto whitespace-pre-wrap select-text">
+                  {report || (
+                    <div className="h-full flex flex-col items-center justify-center text-slate-600 text-center py-20">
+                      <Sparkles className="w-8 h-8 mb-3 opacity-30" />
+                      <p>左側のコンテキストを設定し、<br />生成ボタンを押すとここに本物の週報が出力されます。</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
   const [tone, setTone] = useState<Tone>('standard');
   const [isGenerating, setIsGenerating] = useState(false);
   const [reportMarkdown, setReportMarkdown] = useState('');
